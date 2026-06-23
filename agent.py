@@ -76,14 +76,42 @@ response = client.messages.create(
     messages=[{"role": "user", "content": USER_PROMPT}]
 )
 
-# Extraire le texte JSON de la réponse
+# Extraire le texte JSON de la réponse (ignorer les blocs tool_use/tool_result)
 raw_text = ""
 for block in response.content:
-    if hasattr(block, "text"):
+    if block.type == "text":
         raw_text += block.text
+
+# Si la réponse est vide (Claude a fait du web search sans texte final),
+# relancer avec l'historique complet pour obtenir la synthèse
+if not raw_text.strip():
+    print("⚠️  Pas de texte final, relance avec historique...")
+    messages = [{"role": "user", "content": USER_PROMPT}]
+    
+    # Construire l'historique avec les résultats de recherche
+    assistant_content = response.content
+    messages.append({"role": "assistant", "content": assistant_content})
+    messages.append({"role": "user", "content": "Maintenant génère le briefing JSON complet en utilisant les résultats de recherche ci-dessus. Réponds UNIQUEMENT avec le JSON, sans markdown."})
+    
+    response2 = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4000,
+        system=SYSTEM_PROMPT,
+        messages=messages
+    )
+    raw_text = ""
+    for block in response2.content:
+        if block.type == "text":
+            raw_text += block.text
 
 # Nettoyer et parser le JSON
 raw_text = re.sub(r"```json|```", "", raw_text).strip()
+
+# Extraire le JSON si entouré d'autre texte
+json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+if json_match:
+    raw_text = json_match.group(0)
+
 data = json.loads(raw_text)
 
 print("✅ Briefing généré")
