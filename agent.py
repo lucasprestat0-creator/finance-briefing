@@ -17,15 +17,52 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 today = datetime.now().strftime("%d/%m/%Y")
 today_iso = datetime.now().strftime("%Y-%m-%d")
 
-SYSTEM_PROMPT = """Tu es un analyste financier senior spécialisé dans les marchés mondiaux.
-Tu produis chaque matin un briefing financier complet, précis et actionnable.
-Tu dois impérativement varier les sujets chaque jour : ne jamais répéter les mêmes thèmes, 
-creuser des angles différents, explorer des secteurs, des géographies ou des actifs variés.
-Tu réponds UNIQUEMENT en JSON valide, sans markdown, sans texte autour."""
+# ─── ÉTAPE 1 : RECHERCHE WEB ──────────────────────────────────────────────────
+print("🔍 Recherche des actualités financières...")
 
-USER_PROMPT = f"""Date d'aujourd'hui : {today}
+search_response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=4000,
+    tools=[{"type": "web_search_20250305", "name": "web_search"}],
+    messages=[{
+        "role": "user",
+        "content": f"""Date d'aujourd'hui : {today}
+Recherche les actualités financières du jour :
+1. Les variations des marchés boursiers (CAC 40, S&P 500, Nikkei, DAX, Hang Seng)
+2. Les événements géopolitiques impactant les marchés
+3. Les opportunités d'investissement du moment
+Fais plusieurs recherches pour couvrir tous ces sujets."""
+    }]
+)
 
-Génère un briefing financier quotidien structuré en JSON avec exactement ce format :
+# Extraire tous les résultats de recherche
+search_results = ""
+for block in search_response.content:
+    if block.type == "text":
+        search_results += block.text + "\n"
+    elif block.type == "tool_result":
+        search_results += str(block.content) + "\n"
+
+# Reconstruire l'historique complet pour la synthèse
+messages_history = [
+    {"role": "user", "content": f"""Date d'aujourd'hui : {today}
+Recherche les actualités financières du jour :
+1. Les variations des marchés boursiers (CAC 40, S&P 500, Nikkei, DAX, Hang Seng)
+2. Les événements géopolitiques impactant les marchés
+3. Les opportunités d'investissement du moment
+Fais plusieurs recherches pour couvrir tous ces sujets."""},
+    {"role": "assistant", "content": search_response.content}
+]
+
+print("✅ Recherches effectuées")
+
+# ─── ÉTAPE 2 : GÉNÉRATION DU JSON ─────────────────────────────────────────────
+print("📝 Génération du briefing...")
+
+messages_history.append({
+    "role": "user",
+    "content": f"""Parfait. Maintenant génère le briefing financier quotidien au format JSON strict.
+Réponds UNIQUEMENT avec le JSON ci-dessous, sans aucun texte avant ou après, sans markdown, sans backticks.
 
 {{
   "date": "{today}",
@@ -33,87 +70,57 @@ Génère un briefing financier quotidien structuré en JSON avec exactement ce f
   "marches": {{
     "resume": "2-3 phrases de synthèse des marchés hier",
     "variations": [
-      {{"indice": "CAC 40", "variation": "+0.8%", "commentaire": "porté par..."}},
-      {{"indice": "S&P 500", "variation": "-0.3%", "commentaire": "..."}},
-      {{"indice": "Nikkei", "variation": "+1.2%", "commentaire": "..."}},
-      {{"indice": "DAX", "variation": "+0.5%", "commentaire": "..."}},
-      {{"indice": "Hang Seng", "variation": "-0.7%", "commentaire": "..."}}
+      {{"indice": "CAC 40", "variation": "+0.8%", "commentaire": "contexte"}},
+      {{"indice": "S&P 500", "variation": "-0.3%", "commentaire": "contexte"}},
+      {{"indice": "Nikkei", "variation": "+1.2%", "commentaire": "contexte"}},
+      {{"indice": "DAX", "variation": "+0.5%", "commentaire": "contexte"}},
+      {{"indice": "Hang Seng", "variation": "-0.7%", "commentaire": "contexte"}}
     ],
-    "secteur_focus": "Un secteur en particulier à surveiller aujourd'hui et pourquoi"
+    "secteur_focus": "Secteur à surveiller aujourd'hui et pourquoi"
   }},
   "geopolitique": {{
     "resume": "Synthèse des tensions géopolitiques ayant un impact marché",
     "evenements": [
-      {{"zone": "Nom de la zone/conflit", "situation": "Description courte", "impact_marche": "Impact concret sur les prix/indices"}},
-      {{"zone": "...", "situation": "...", "impact_marche": "..."}}
+      {{"zone": "Zone/conflit", "situation": "Description courte", "impact_marche": "Impact concret"}},
+      {{"zone": "Zone/conflit", "situation": "Description courte", "impact_marche": "Impact concret"}}
     ]
   }},
   "opportunites": {{
-    "intro": "Phrase d'intro sur le contexte du jour pour les opportunités",
+    "intro": "Phrase d'intro sur le contexte du jour",
     "idees": [
-      {{"titre": "Titre de l'opportunité", "type": "Action/ETF/Obligation/Matière première/Crypto", "raisonnement": "Pourquoi maintenant, quels catalyseurs", "risques": "Principaux risques à surveiller"}},
-      {{"titre": "...", "type": "...", "raisonnement": "...", "risques": "..."}},
-      {{"titre": "...", "type": "...", "raisonnement": "...", "risques": "..."}}
+      {{"titre": "Titre", "type": "Action", "raisonnement": "Pourquoi maintenant", "risques": "Risques"}},
+      {{"titre": "Titre", "type": "ETF", "raisonnement": "Pourquoi maintenant", "risques": "Risques"}},
+      {{"titre": "Titre", "type": "Matière première", "raisonnement": "Pourquoi maintenant", "risques": "Risques"}}
     ],
     "disclaimer": "Ceci est purement spéculatif et ne constitue pas un conseil en investissement."
   }},
   "a_surveiller": [
-    "Événement ou publication à surveiller aujourd'hui 1",
-    "Événement ou publication à surveiller aujourd'hui 2",
-    "Événement ou publication à surveiller aujourd'hui 3"
+    "Événement 1",
+    "Événement 2",
+    "Événement 3"
   ]
-}}
+}}"""
+})
 
-Sois précis, varié, et ancré dans l'actualité du jour. Explore des angles originaux."""
-
-print("🔍 Appel à Claude avec web search...")
-
-response = client.messages.create(
+json_response = client.messages.create(
     model="claude-sonnet-4-6",
     max_tokens=4000,
-    system=SYSTEM_PROMPT,
-    tools=[{"type": "web_search_20250305", "name": "web_search"}],
-    messages=[{"role": "user", "content": USER_PROMPT}]
+    system="Tu es un analyste financier senior. Tu réponds UNIQUEMENT avec du JSON valide, sans aucun texte autour, sans markdown.",
+    messages=messages_history
 )
 
-# Extraire le texte JSON de la réponse (ignorer les blocs tool_use/tool_result)
 raw_text = ""
-for block in response.content:
+for block in json_response.content:
     if block.type == "text":
         raw_text += block.text
 
-# Si la réponse est vide (Claude a fait du web search sans texte final),
-# relancer avec l'historique complet pour obtenir la synthèse
-if not raw_text.strip():
-    print("⚠️  Pas de texte final, relance avec historique...")
-    messages = [{"role": "user", "content": USER_PROMPT}]
-    
-    # Construire l'historique avec les résultats de recherche
-    assistant_content = response.content
-    messages.append({"role": "assistant", "content": assistant_content})
-    messages.append({"role": "user", "content": "Maintenant génère le briefing JSON complet en utilisant les résultats de recherche ci-dessus. Réponds UNIQUEMENT avec le JSON, sans markdown."})
-    
-    response2 = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
-        system=SYSTEM_PROMPT,
-        messages=messages
-    )
-    raw_text = ""
-    for block in response2.content:
-        if block.type == "text":
-            raw_text += block.text
-
-# Nettoyer et parser le JSON
+# Nettoyage robuste
 raw_text = re.sub(r"```json|```", "", raw_text).strip()
-
-# Extraire le JSON si entouré d'autre texte
 json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
 if json_match:
     raw_text = json_match.group(0)
 
 data = json.loads(raw_text)
-
 print("✅ Briefing généré")
 
 # ─── TEMPLATE EMAIL HTML ──────────────────────────────────────────────────────
@@ -153,23 +160,17 @@ def build_email(d):
 
     surveiller_html = "".join(f"<li style='margin:6px 0;color:#374151'>{s}</li>" for s in d["a_surveiller"])
 
-    return f"""
-<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f3f4f6;margin:0;padding:20px">
   <div style="max-width:680px;margin:0 auto;background:white;border-radius:12px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.07)">
-
-    <!-- HEADER -->
     <div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:28px 32px">
       <div style="color:#93c5fd;font-size:13px;text-transform:uppercase;letter-spacing:1px">Briefing Financier Quotidien</div>
       <h1 style="color:white;margin:8px 0 4px;font-size:22px">{d['headline']}</h1>
       <div style="color:#bfdbfe;font-size:14px">{d['date']}</div>
     </div>
-
     <div style="padding:24px 32px">
-
-      <!-- MARCHÉS -->
       <h2 style="color:#1e3a5f;border-bottom:2px solid #dbeafe;padding-bottom:8px">📈 Marchés</h2>
       <p style="color:#374151">{d['marches']['resume']}</p>
       <table style="width:100%;border-collapse:collapse;margin:12px 0">
@@ -184,25 +185,16 @@ def build_email(d):
         <strong style="color:#1d4ed8">🔍 Secteur focus :</strong>
         <span style="color:#374151"> {d['marches']['secteur_focus']}</span>
       </div>
-
-      <!-- GÉOPOLITIQUE -->
       <h2 style="color:#1e3a5f;border-bottom:2px solid #dbeafe;padding-bottom:8px;margin-top:28px">🌍 Contexte Géopolitique</h2>
       <p style="color:#374151">{d['geopolitique']['resume']}</p>
       {geo_html}
-
-      <!-- OPPORTUNITÉS -->
       <h2 style="color:#1e3a5f;border-bottom:2px solid #dbeafe;padding-bottom:8px;margin-top:28px">💼 Opportunités du Jour</h2>
       <p style="color:#374151">{d['opportunites']['intro']}</p>
       {opps_html}
       <p style="color:#9ca3af;font-size:12px;font-style:italic">{d['opportunites']['disclaimer']}</p>
-
-      <!-- À SURVEILLER -->
       <h2 style="color:#1e3a5f;border-bottom:2px solid #dbeafe;padding-bottom:8px;margin-top:28px">⏰ À Surveiller Aujourd'hui</h2>
       <ul style="padding-left:20px">{surveiller_html}</ul>
-
     </div>
-
-    <!-- FOOTER -->
     <div style="background:#f8fafc;padding:16px 32px;text-align:center;color:#9ca3af;font-size:12px">
       Finance Briefing — Généré automatiquement par IA · <a href="https://lucasprestat0.github.io/finance-briefing" style="color:#3b82f6">Voir l'archive</a>
     </div>
@@ -222,14 +214,12 @@ resend.Emails.send({
 })
 print("✅ Email envoyé")
 
-# ─── SAUVEGARDE POUR GITHUB PAGES ─────────────────────────────────────────────
+# ─── SAUVEGARDE GITHUB PAGES ──────────────────────────────────────────────────
 os.makedirs("docs/editions", exist_ok=True)
 
-# Page de l'édition du jour
 with open(f"docs/editions/{today_iso}.html", "w", encoding="utf-8") as f:
     f.write(html_content)
 
-# Mise à jour de l'index
 editions = sorted([
     f.replace(".html", "")
     for f in os.listdir("docs/editions")
