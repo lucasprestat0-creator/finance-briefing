@@ -3,6 +3,7 @@ import resend
 import json
 import os
 import re
+from json_repair import repair_json
 from datetime import datetime
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -120,7 +121,9 @@ json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
 if json_match:
     raw_text = json_match.group(0)
 
-data = json.loads(raw_text)
+# Réparation automatique du JSON si invalide
+repaired = repair_json(raw_text)
+data = json.loads(repaired)
 print("✅ Briefing généré")
 
 # ─── TEMPLATE EMAIL HTML ──────────────────────────────────────────────────────
