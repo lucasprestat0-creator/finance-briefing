@@ -22,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Installer les dépendances
-        run: pip install anthropic resend
+        run: pip install anthropic resend json-repair
 
       - name: Lancer l'agent
         env:
