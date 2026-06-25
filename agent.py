@@ -3,7 +3,6 @@ import resend
 import json
 import os
 import re
-from json_repair import repair_json
 from datetime import datetime
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
@@ -21,37 +20,23 @@ today_iso = datetime.now().strftime("%Y-%m-%d")
 # ─── ÉTAPE 1 : RECHERCHE WEB ──────────────────────────────────────────────────
 print("🔍 Recherche des actualités financières...")
 
-search_response = client.messages.create(
-    model="claude-sonnet-4-6",
-    max_tokens=4000,
-    tools=[{"type": "web_search_20250305", "name": "web_search"}],
-    messages=[{
-        "role": "user",
-        "content": f"""Date d'aujourd'hui : {today}
+search_prompt = f"""Date d'aujourd'hui : {today}
 Recherche les actualités financières du jour :
 1. Les variations des marchés boursiers (CAC 40, S&P 500, Nikkei, DAX, Hang Seng)
 2. Les événements géopolitiques impactant les marchés
 3. Les opportunités d'investissement du moment
 Fais plusieurs recherches pour couvrir tous ces sujets."""
-    }]
-)
 
-# Extraire tous les résultats de recherche
-search_results = ""
-for block in search_response.content:
-    if block.type == "text":
-        search_results += block.text + "\n"
-    elif block.type == "tool_result":
-        search_results += str(block.content) + "\n"
+search_response = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=4000,
+    tools=[{"type": "web_search_20250305", "name": "web_search"}],
+    messages=[{"role": "user", "content": search_prompt}]
+)
 
 # Reconstruire l'historique complet pour la synthèse
 messages_history = [
-    {"role": "user", "content": f"""Date d'aujourd'hui : {today}
-Recherche les actualités financières du jour :
-1. Les variations des marchés boursiers (CAC 40, S&P 500, Nikkei, DAX, Hang Seng)
-2. Les événements géopolitiques impactant les marchés
-3. Les opportunités d'investissement du moment
-Fais plusieurs recherches pour couvrir tous ces sujets."""},
+    {"role": "user", "content": search_prompt},
     {"role": "assistant", "content": search_response.content}
 ]
 
@@ -60,10 +45,9 @@ print("✅ Recherches effectuées")
 # ─── ÉTAPE 2 : GÉNÉRATION DU JSON ─────────────────────────────────────────────
 print("📝 Génération du briefing...")
 
-messages_history.append({
-    "role": "user",
-    "content": f"""Parfait. Maintenant génère le briefing financier quotidien au format JSON strict.
+json_instruction = f"""Parfait. Maintenant génère le briefing financier quotidien au format JSON strict.
 Réponds UNIQUEMENT avec le JSON ci-dessous, sans aucun texte avant ou après, sans markdown, sans backticks.
+Tous les champs sont OBLIGATOIRES, y compris "a_surveiller" qui doit contenir au moins 3 éléments.
 
 {{
   "date": "{today}",
@@ -101,30 +85,129 @@ Réponds UNIQUEMENT avec le JSON ci-dessous, sans aucun texte avant ou après, s
     "Événement 3"
   ]
 }}"""
-})
 
-json_response = client.messages.create(
-    model="claude-sonnet-4-6",
-    max_tokens=4000,
-    system="Tu es un analyste financier senior. Tu réponds UNIQUEMENT avec du JSON valide, sans aucun texte autour, sans markdown.",
-    messages=messages_history
-)
+messages_history.append({"role": "user", "content": json_instruction})
 
-raw_text = ""
-for block in json_response.content:
-    if block.type == "text":
-        raw_text += block.text
 
-# Nettoyage robuste
-raw_text = re.sub(r"```json|```", "", raw_text).strip()
-json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-if json_match:
-    raw_text = json_match.group(0)
+def request_json(messages):
+    """Appelle le modèle et renvoie le texte brut de la réponse."""
+    resp = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=8000,  # relevé pour éviter la troncature du JSON (a_surveiller est en fin)
+        system="Tu es un analyste financier senior. Tu réponds UNIQUEMENT avec du JSON valide, sans aucun texte autour, sans markdown.",
+        messages=messages
+    )
+    text = ""
+    for block in resp.content:
+        if block.type == "text":
+            text += block.text
+    return text
 
-# Réparation automatique du JSON si invalide
-repaired = repair_json(raw_text)
-data = json.loads(repaired)
+
+def extract_json(raw_text):
+    """Nettoie et parse le JSON. Renvoie un dict, ou None si échec."""
+    cleaned = re.sub(r"```json|```", "", raw_text).strip()
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
+    if match:
+        cleaned = match.group(0)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+
+# Tentative + 1 retry si le JSON est invalide
+raw_text = request_json(messages_history)
+data = extract_json(raw_text)
+
+if data is None:
+    print("⚠️ JSON invalide, nouvelle tentative...")
+    messages_history.append({"role": "assistant", "content": raw_text})
+    messages_history.append({
+        "role": "user",
+        "content": "Ta réponse précédente n'était pas un JSON valide. Renvoie UNIQUEMENT le JSON complet et valide, sans aucun texte ni markdown."
+    })
+    raw_text = request_json(messages_history)
+    data = extract_json(raw_text)
+
+if data is None:
+    print("❌ Impossible d'obtenir un JSON valide après 2 tentatives.")
+    print("Réponse brute :\n", raw_text[:2000])
+    raise SystemExit(1)
+
+
+# ─── NORMALISATION : garantit que tout le schéma existe ───────────────────────
+def normalize_data(d):
+    """Remplit chaque champ manquant avec une valeur par défaut.
+    Après ce passage, build_email ne peut plus lever de KeyError."""
+    if not isinstance(d, dict):
+        d = {}
+
+    d.setdefault("date", today)
+    d.setdefault("headline", "Briefing financier du jour")
+
+    # --- marchés ---
+    marches = d.get("marches") if isinstance(d.get("marches"), dict) else {}
+    marches.setdefault("resume", "Synthèse des marchés indisponible aujourd'hui.")
+    marches.setdefault("secteur_focus", "—")
+    variations = marches.get("variations")
+    variations = variations if isinstance(variations, list) else []
+    marches["variations"] = [
+        {
+            "indice": v.get("indice", "—"),
+            "variation": v.get("variation", "n/a"),
+            "commentaire": v.get("commentaire", ""),
+        }
+        for v in variations if isinstance(v, dict)
+    ]
+    d["marches"] = marches
+
+    # --- géopolitique ---
+    geo = d.get("geopolitique") if isinstance(d.get("geopolitique"), dict) else {}
+    geo.setdefault("resume", "")
+    evenements = geo.get("evenements")
+    evenements = evenements if isinstance(evenements, list) else []
+    geo["evenements"] = [
+        {
+            "zone": e.get("zone", "—"),
+            "situation": e.get("situation", ""),
+            "impact_marche": e.get("impact_marche", ""),
+        }
+        for e in evenements if isinstance(e, dict)
+    ]
+    d["geopolitique"] = geo
+
+    # --- opportunités ---
+    opp = d.get("opportunites") if isinstance(d.get("opportunites"), dict) else {}
+    opp.setdefault("intro", "")
+    opp.setdefault(
+        "disclaimer",
+        "Ceci est purement spéculatif et ne constitue pas un conseil en investissement."
+    )
+    idees = opp.get("idees")
+    idees = idees if isinstance(idees, list) else []
+    opp["idees"] = [
+        {
+            "titre": o.get("titre", "—"),
+            "type": o.get("type", "Autre"),
+            "raisonnement": o.get("raisonnement", ""),
+            "risques": o.get("risques", ""),
+        }
+        for o in idees if isinstance(o, dict)
+    ]
+    d["opportunites"] = opp
+
+    # --- à surveiller ---
+    a_surveiller = d.get("a_surveiller")
+    a_surveiller = a_surveiller if isinstance(a_surveiller, list) else []
+    d["a_surveiller"] = [str(s) for s in a_surveiller]
+
+    return d
+
+
+data = normalize_data(data)
 print("✅ Briefing généré")
+
 
 # ─── TEMPLATE EMAIL HTML ──────────────────────────────────────────────────────
 def build_email(d):
@@ -161,7 +244,9 @@ def build_email(d):
           <p style="color:#dc2626;margin:4px 0;font-size:13px">⚠️ Risques : {o['risques']}</p>
         </div>"""
 
-    surveiller_html = "".join(f"<li style='margin:6px 0;color:#374151'>{s}</li>" for s in d["a_surveiller"])
+    surveiller_html = "".join(
+        f"<li style='margin:6px 0;color:#374151'>{s}</li>" for s in d["a_surveiller"]
+    )
 
     return f"""<!DOCTYPE html>
 <html>
